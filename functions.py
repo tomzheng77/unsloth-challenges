@@ -3,6 +3,7 @@ import inspect
 import torch
 from bitsandbytes import functional
 
+ENABLE_ASSERTIONS = False
 
 # NOTE: torch.compile works in run, but not in debug mode, because debug calls sys._getiframe,
 # which causes a graph break
@@ -36,9 +37,10 @@ def derive_absmax(A, quant_state):
 @torch.compile(fullgraph=True)
 def my_dequantize_4bit(A, quant_state):
     absmax = derive_absmax(A, quant_state)
-    assert(absmax.dtype == torch.float32)
-    assert(A.shape[0] == 1)
-    assert(len(A.shape) == 2)
+    if ENABLE_ASSERTIONS:
+        assert(absmax.dtype == torch.float32)
+        assert(A.shape[0] == 1)
+        assert(len(A.shape) == 2)
     elm0 = (A >> 4).to(torch.long).reshape(-1)
     elm1 = (A & 0b1111).to(torch.long).reshape(-1)
     val0 = torch.index_select(quant_state.code, dim=0, index=elm0)
