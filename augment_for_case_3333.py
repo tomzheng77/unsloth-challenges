@@ -5,6 +5,8 @@ import os
 from bitsandbytes import functional
 from torchao.dtypes import NF4Tensor
 
+from functions import my_dequantize_4bit, print_differences, assert_same
+
 # not possible to use this as drop-in, as it also uses CUDA
 # from unsloth.kernels import fast_dequantize
 
@@ -26,61 +28,6 @@ if CHECK_NF4_TENSOR:
     print(example_nf4)
     print(example_nf4.get_original_weight())
     exit(0)
-
-# NOTE: torch.compile works in run, but not in debug mode, because debug calls sys._getiframe,
-# which causes a graph break
-@torch.compile(fullgraph=True)
-def derive_absmax(A, quant_state):
-    # maybe is better to just implement this
-    # first lets dequantize the absmax. we need a total of 262144 values
-    # we have as input:
-    # quant_state.absmax: [262144] (uint8)
-    # quant_state.offset: [] (float32)
-    # quant_state.state2.absmax: [1024] (float32)
-    # quant_state.state2.blocksize: 256
-    # quant_state.state2.code: [256] (float32) (??)
-    # see call to dequantize_blockwise(quant_state.absmax, quant_state.state2)
-    # where do I find the CUDA code again
-    # - looking at kDequantizeBlockwise in CUDA I don't think the "code" is used
-    # could be really simple:
-    # multiply quant_state.absmax by quant_state.state2.code (actually not mul but access code with absmax),
-    values = torch.index_select(quant_state.state2.code, dim=0, index=quant_state.absmax.to(torch.long))
-
-    # Reshape large_tensor to [1024, 256]
-    # Reshape small_tensor to [1024, 1] for broadcasting
-    # Multiply with broadcast
-    small_tensor_length = quant_state.state2.absmax.shape[0]
-    large_tensor_reshaped = values.view(small_tensor_length, quant_state.state2.blocksize)
-    small_tensor_reshaped = quant_state.state2.absmax.view(small_tensor_length, 1)
-    result = large_tensor_reshaped * small_tensor_reshaped
-    result = result.view(-1)
-    return result + quant_state.offset
-
-@torch.compile(fullgraph=True)
-def my_dequantize_4bit(A, quant_state):
-    absmax = derive_absmax(A, quant_state)
-    assert(absmax.dtype == torch.float32)
-    assert(A.shape[0] == 1)
-    assert(len(A.shape) == 2)
-    elm0 = (A >> 4).to(torch.long).reshape(-1)
-    elm1 = (A & 0b1111).to(torch.long).reshape(-1)
-    val0 = torch.index_select(quant_state.code, dim=0, index=elm0)
-    val1 = torch.index_select(quant_state.code, dim=0, index=elm1)
-
-    # blocksize = quant_state.blocksize
-    # num_blocks = A.shape[1] // blocksize
-    # absmax = absmax.view(num_blocks, 1)
-    # val0 = (val0.view(num_blocks, blocksize) * absmax).to(torch.bfloat16).view(-1)
-    # val1 = (val1.view(num_blocks, blocksize) * absmax).to(torch.bfloat16).view(-1)
-
-    # TODO: make this more elegant
-    blocksize = quant_state.blocksize
-    num_blocks = A.shape[1] * 2 // blocksize
-    result = torch.stack([val0, val1], dim=-1).view(num_blocks, blocksize)
-    absmax = absmax.view(num_blocks, 1)
-    return (result * absmax).reshape(quant_state.shape).to(torch.bfloat16).t()
-
-    # return torch.stack([val0, val1], dim=-1).reshape(quant_state.shape)
 
 def check_assumptions(A, quant_state):
     assert(A.dtype == torch.uint8)
@@ -107,10 +54,15 @@ def check_assumptions(A, quant_state):
     # print('mine', my_absmax)
 
     my_dequantized = my_dequantize_4bit(A, quant_state)
-    if not torch.allclose(dequantized, my_dequantized, atol=1e-9):
-        print(dequantized)
-        print(my_dequantized)
-    assert(torch.allclose(dequantized, my_dequantized, atol=1e-3))
+    assert_same(dequantized, my_dequantized)
+
+    # looks like it passes the test from unsloth?
+    # if not torch.allclose(dequantized, my_dequantized, atol=1e-9):
+    #     print(dequantized)
+    #     print(my_dequantized)
+    #     print_differences(dequantized, my_dequantized)
+    # assert(torch.allclose(dequantized, my_dequantized, atol=1e-3))
+
     del dequantized
     del my_dequantized
 
