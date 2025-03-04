@@ -1,4 +1,5 @@
 .idea
 outputs
 torch_compile_debug
+unsloth_compiled_cache
 dequantize_4bit_cases
