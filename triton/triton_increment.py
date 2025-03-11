@@ -65,7 +65,7 @@ def obtain_absmax_kernel(
     expanded_absmax_val = tl.load(absmax_code_ptr + expanded_absmax_idx_quantized)
     expanded_absmax_scale = tl.load(absmax_scale_ptr + pid)
     expanded_absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
-    expanded_absmax_final = expanded_absmax_val * expanded_absmax_scale
+    expanded_absmax_final = expanded_absmax_val * expanded_absmax_scale + expanded_absmax_offset
 
     # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
 
@@ -96,8 +96,8 @@ def obtain_absmax_kernel(
     # tl.store(out_offsets1, pid * packed_block_size + tl.arange(0, packed_block_size))
     # tl.store(out_offsets0, values_val0)
     # tl.store(out_offsets1, values_val1)
-    tl.store(out_offsets0, (values_val0 * expanded_absmax_final) - expanded_absmax_offset)
-    tl.store(out_offsets1, (values_val1 * expanded_absmax_final) - expanded_absmax_offset)
+    tl.store(out_offsets0, (values_val0 * expanded_absmax_final))
+    tl.store(out_offsets1, (values_val1 * expanded_absmax_final))
     # tl.store(out_offsets0, values_val0 * expanded_absmax_final + expanded_absmax_offset)
     # tl.store(out_offsets1, values_val1 * expanded_absmax_final + expanded_absmax_offset)
 
@@ -187,7 +187,7 @@ weight = Params4bit(tensor, quant_type='nf4').to("cuda")
 assert(weight.quant_state.offset.dtype == torch.float32)
 assert(weight.quant_state.state2.absmax.dtype == torch.float32)
 assert(weight.quant_state.absmax.dtype == torch.uint8)
-weight.quant_state.offset = torch.tensor(0.0, dtype=torch.float32, device='cuda')
+# weight.quant_state.offset = torch.tensor(0.0, dtype=torch.float32, device='cuda')
 # weight.quant_state.state2.absmax = torch.ones(weight.quant_state.state2.absmax.shape, dtype=torch.float32, device='cuda')
 # weight.quant_state.absmax = torch.full(weight.quant_state.absmax.shape, 255, dtype=torch.uint8, device='cuda')
 
