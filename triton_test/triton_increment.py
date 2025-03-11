@@ -228,13 +228,13 @@ if __name__ == '__main__':
 
     # exit(0)
 
-    # 0.1542057991027832
+    # Local: 2.3127870559692383
     start = time.time()
     for i in range(10000):
         fast_dequantize(weight, weight.quant_state)
     print(time.time() - start)
 
-    # 0.08240318298339844
+    # Local: 1.411628007888794
     start = time.time()
     for i in range(10000):
         fused_dequantize(weight.data, weight.quant_state)
@@ -243,3 +243,15 @@ if __name__ == '__main__':
     # NOTE: my original implementation is flaky, you need to transpose the data
     # even so it can't be directly used in A
     # print(my_dequantize_4bit(weight.data.t(), weight.quant_state))
+
+# L4
+# 1.690812587738037
+# 1.0677266120910645
+
+# A100
+# 0.8383045196533203
+# 0.45516395568847656
+
+# T4
+# 3.0163562297821045
+# 2.995758056640625
