@@ -9,9 +9,9 @@ from mpmath import absmax
 from unsloth.kernels import fast_dequantize
 
 from functions import my_dequantize_4bit
+from peft.utils.integrations import dequantize_module_weight as peft_dequantize
 
-DEBUG_FLAG = False
-
+DEBUG_FLAG = True
 @triton.jit
 def obtain_absmax_kernel(
     absmax_ptr,        # the absmax values in uint8
@@ -29,27 +29,45 @@ def obtain_absmax_kernel(
 ):
     # Program ID: each thread block processes one output block
     pid = tl.program_id(axis=0)
-    absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
-    absmax_val_quantized = tl.load(absmax_ptr + absmax_idx).to(tl.int32)
 
-    # write this to output_ptr, this checks out
-    tl.store(output_ptr + absmax_idx, absmax_val_quantized)
+    # ========== [START REFERENCE ABSMAX IMPLEMENTATION] ==========
+    # absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
+    # absmax_val_quantized = tl.load(absmax_ptr + absmax_idx).to(tl.int32)
+    #
+    # # write this to output_ptr, this checks out
+    # tl.store(output_ptr + absmax_idx, absmax_val_quantized)
+    #
+    # # select the code values to complete the first step of dequant
+    # absmax_val = tl.load(absmax_code_ptr + absmax_val_quantized)
+    #
+    # # matches index_select
+    # # tensor([0.0930, 0.1352, 0.0097, ..., -0.1633, 0.0733, 0.1773], device='cuda:0')
+    # # tl.store(output_ptr + absmax_idx, absmax_val)
+    #
+    # absmax_scale = tl.load(absmax_scale_ptr + pid)
+    # absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
+    # absmax_final = absmax_val * absmax_scale + absmax_offset
+    #
+    # # assuming this is correct
+    # # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
+    # # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
+    # # tl.store(output_ptr + absmax_idx, absmax_final)
+    # ========== [END REFERENCE ABSMAX IMPLEMENTATION] ==========
 
-    # select the code values to complete the first step of dequant
-    absmax_val = tl.load(absmax_code_ptr + absmax_val_quantized)
+    # assume half_values_block_size is 128, this means that
+    # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
+    subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
 
-    # matches index_select
-    # tensor([0.0930, 0.1352, 0.0097, ..., -0.1633, 0.0733, 0.1773], device='cuda:0')
-    # tl.store(output_ptr + absmax_idx, absmax_val)
+    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), subgroup_offsets)
 
-    absmax_scale = tl.load(absmax_scale_ptr + pid)
-    absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
-    absmax_final = absmax_val * absmax_scale + absmax_offset
+    expanded_absmax_idx = pid * absmax_block_size + subgroup_offsets
+    expanded_absmax_idx_quantized = tl.load(absmax_ptr + expanded_absmax_idx).to(tl.int32)
+    expanded_absmax_val = tl.load(absmax_code_ptr + expanded_absmax_idx_quantized)
+    expanded_absmax_scale = tl.load(absmax_scale_ptr + pid)
+    expanded_absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
+    expanded_absmax_final = expanded_absmax_val * expanded_absmax_scale
 
-    # assuming this is correct
-    # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
-    # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
-    # tl.store(output_ptr + absmax_idx, absmax_final)
+    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
 
     # now lets just write something, anything to the values
     values_idx = pid * packed_block_size + tl.arange(0, packed_block_size)
@@ -74,15 +92,21 @@ def obtain_absmax_kernel(
     #         [-0.5251, 0.3379, -1.0000, ..., 0.4407, -0.6962, 0.0796],
     #         [0.3379, 0.7230, -0.0911, ..., -0.5251, 0.7230, 0.7230]],
     #        device='cuda:0')
-    # tl.store(out_offsets0, values_val0)
-    # tl.store(out_offsets1, values_val1)
+    # tl.store(out_offsets0, pid * packed_block_size + tl.arange(0, packed_block_size))
+    # tl.store(out_offsets1, pid * packed_block_size + tl.arange(0, packed_block_size))
+    tl.store(out_offsets0, values_val0)
+    tl.store(out_offsets1, values_val1)
+    # tl.store(out_offsets0, (values_val0 * expanded_absmax_final) - expanded_absmax_offset)
+    # tl.store(out_offsets1, (values_val1 * expanded_absmax_final) - expanded_absmax_offset)
+    # tl.store(out_offsets0, values_val0 * expanded_absmax_final + expanded_absmax_offset)
+    # tl.store(out_offsets1, values_val1 * expanded_absmax_final + expanded_absmax_offset)
 
     # assume half_values_block_size is 128, this means that
     # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
-    subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
-
-    # access absmax_final with subgroup_offsets
-    absmax_final_subgroup = tl.load(absmax_final + subgroup_offsets)
+    # subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
+    #
+    # # access absmax_final with subgroup_offsets
+    # absmax_final_subgroup = tl.load(absmax_final + subgroup_offsets)
 
 
 def fused_dequantize(A, quant_state):
@@ -103,7 +127,7 @@ def fused_dequantize(A, quant_state):
     values_ptr = A
     values_code_ptr = quant_state.code
     # output_ptr = torch.empty(absmax_ptr.shape, dtype=torch.float32, device='cuda')
-    output_ptr = torch.empty(quant_state.shape, dtype=torch.float32, device='cuda')
+    output_ptr = torch.empty(quant_state.shape, dtype=torch.float16, device='cuda')
 
     if DEBUG_FLAG:
         assert(absmax_ptr.dtype == torch.uint8)
@@ -112,7 +136,7 @@ def fused_dequantize(A, quant_state):
         assert(absmax_code_ptr.device.type == 'cuda')
         assert(absmax_offset_ptr.dtype == torch.float32)
         assert(absmax_offset_ptr.device.type == 'cuda')
-        assert(output_ptr.dtype == torch.float32)
+        assert(output_ptr.dtype == torch.float16)
         assert(output_ptr.device.type == 'cuda')
 
     # NOTE: surely we want one triton block to handle at least an entire absmax block
@@ -145,6 +169,7 @@ def fused_dequantize(A, quant_state):
         print(absmax_ptr)
         print(absmax_selected)
         print(absmax_scaled)
+        print('========== OUTPUT ==========')
         print(output_ptr)
 
     return output_ptr
@@ -157,11 +182,45 @@ def bnb_Linear4bit(hd, m, dtype = torch.float16):
         quant_type          = "nf4",
     )
 
-weight: Params4bit = bnb_Linear4bit(2048, 8192).to("cuda").weight
-fused_dequantize(weight.data, weight.quant_state)
+tensor = torch.randn((2048, 8192), dtype=torch.float16, device='cuda')
+weight = Params4bit(tensor, quant_type='nf4').to("cuda")
+assert(weight.quant_state.offset.dtype == torch.float32)
+assert(weight.quant_state.state2.absmax.dtype == torch.float32)
+assert(weight.quant_state.absmax.dtype == torch.uint8)
+weight.quant_state.offset = torch.tensor(0.0, dtype=torch.float32, device='cuda')
+weight.quant_state.state2.absmax = torch.ones(weight.quant_state.state2.absmax.shape, dtype=torch.float32, device='cuda')
+weight.quant_state.absmax = torch.full(weight.quant_state.absmax.shape, 255, dtype=torch.uint8, device='cuda')
 
+# layer = bnb_Linear4bit(2048, 8192).to("cuda")
+# weight = layer.weight
+# weight_clone = weight.to("cpu").to("cuda")
+# assert(weight.quant_state.offset.dtype == torch.float32)
+# assert(weight.quant_state.state2.absmax.dtype == torch.float32)
+# assert(weight.quant_state.absmax.dtype == torch.uint8)
+# weight.quant_state.offset = torch.tensor(0.0, dtype=torch.float32, device='cuda')
+# weight.quant_state.state2.absmax = torch.ones(weight.quant_state.state2.absmax.shape, dtype=torch.float32, device='cuda')
+# weight.quant_state.absmax = torch.full(weight.quant_state.absmax.shape, 255, dtype=torch.uint8, device='cuda')
+
+# answer = peft_dequantize(weight)
+# print(answer.dtype)
+# print(answer)
+# print(peft_dequantize(layer))
+# print(peft_dequantize(layer))
+
+print('========== ANSWER 1 ==========')
 answer = fast_dequantize(weight, weight.quant_state)
+print(answer.dtype)
+print(answer)
+print('========== ANSWER 2 ==========')
+answer = fast_dequantize(weight, weight.quant_state)
+print(answer)
 print(answer.shape)
+# print('========== END ==========')
+
+answer = fused_dequantize(weight.data, weight.quant_state)
+# print(answer)
+
+exit(0)
 
 # 0.1542057991027832
 start = time.time()
