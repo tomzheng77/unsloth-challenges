@@ -207,38 +207,39 @@ assert(weight.quant_state.absmax.dtype == torch.uint8)
 # print(peft_dequantize(layer))
 # print(peft_dequantize(layer))
 
-print('========== ANSWER 1 ==========')
-answer = fast_dequantize(weight, weight.quant_state)
-print(answer.dtype)
-print(answer)
-print(answer.shape)
-print('========== ANSWER 2 ==========')
-answer = fast_dequantize(weight, weight.quant_state)
-print(answer.dtype)
-print(answer)
-print(answer.shape)
+if __name__ == '__main__':
+    print('========== ANSWER 1 ==========')
+    answer = fast_dequantize(weight, weight.quant_state)
+    print(answer.dtype)
+    print(answer)
+    print(answer.shape)
+    print('========== ANSWER 2 ==========')
+    answer = fast_dequantize(weight, weight.quant_state)
+    print(answer.dtype)
+    print(answer)
+    print(answer.shape)
 
-print('========== MY ANSWER ==========')
-answer = fused_dequantize(weight.data, weight.quant_state)
-print(answer.dtype)
-print(answer)
-print(answer.shape)
-print('========== END ==========')
+    print('========== MY ANSWER ==========')
+    answer = fused_dequantize(weight.data, weight.quant_state)
+    print(answer.dtype)
+    print(answer)
+    print(answer.shape)
+    print('========== END ==========')
 
-# exit(0)
+    # exit(0)
 
-# 0.1542057991027832
-start = time.time()
-for i in range(10000):
-    fast_dequantize(weight, weight.quant_state)
-print(time.time() - start)
+    # 0.1542057991027832
+    start = time.time()
+    for i in range(10000):
+        fast_dequantize(weight, weight.quant_state)
+    print(time.time() - start)
 
-# 0.08240318298339844
-start = time.time()
-for i in range(10000):
-    fused_dequantize(weight.data, weight.quant_state)
-print(time.time() - start)
+    # 0.08240318298339844
+    start = time.time()
+    for i in range(10000):
+        fused_dequantize(weight.data, weight.quant_state)
+    print(time.time() - start)
 
-# NOTE: my original implementation is flaky, you need to transpose the data
-# even so it can't be directly used in A
-# print(my_dequantize_4bit(weight.data.t(), weight.quant_state))
+    # NOTE: my original implementation is flaky, you need to transpose the data
+    # even so it can't be directly used in A
+    # print(my_dequantize_4bit(weight.data.t(), weight.quant_state))
