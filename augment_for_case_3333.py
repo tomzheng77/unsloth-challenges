@@ -6,6 +6,8 @@ from bitsandbytes import functional
 from torchao.dtypes import NF4Tensor
 
 from functions import my_dequantize_4bit, print_differences, assert_same
+from functions_triton_example1 import triton_fused_dequantize
+from functions_triton_example2 import dequantize_4bit_triton
 
 # not possible to use this as drop-in, as it also uses CUDA
 # from unsloth.kernels import fast_dequantize
@@ -19,6 +21,7 @@ PREFIX = 'case_'
 CASE_INDEX = 3333
 CHECK_NF4_TENSOR = False
 CHECK_ASSUMPTIONS = True
+USE_TRITON = True
 
 # step through how NF4Tensor does its dequantize, which has been proven to be torch.compile-able
 # what does scaler block size correspond to?
@@ -53,7 +56,10 @@ def check_assumptions(A, quant_state):
     # my_absmax = derive_absmax(A, quant_state)
     # print('mine', my_absmax)
 
-    my_dequantized = my_dequantize_4bit(A, quant_state)
+    if USE_TRITON:
+        my_dequantized = triton_fused_dequantize(A, quant_state)
+    else:
+        my_dequantized = my_dequantize_4bit(A, quant_state)
     assert_same(dequantized, my_dequantized)
 
     # looks like it passes the test from unsloth?

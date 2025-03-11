@@ -29,7 +29,7 @@ def fused_dequantize_kernel(
     quant_absmax_val = tl.load(quant_absmax_ptr + absmax_idx).to(tl.int32)
     code_val = tl.load(state2_code_ptr + quant_absmax_val)
     state2_absmax_val = tl.load(state2_absmax_ptr + out_block_idx)
-    scaling = code_val * state2_absmax_val + offset
+    scaling = code_val * state2_absmax_val + tl.load(offset)
 
     # Process packed elements for this block
     packed_per_block = blocksize // 2  # Number of uint8 elements per block
