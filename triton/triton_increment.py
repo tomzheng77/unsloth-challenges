@@ -11,7 +11,7 @@ from unsloth.kernels import fast_dequantize
 from functions import my_dequantize_4bit
 from peft.utils.integrations import dequantize_module_weight as peft_dequantize
 
-DEBUG_FLAG = True
+DEBUG_FLAG = False
 @triton.jit
 def obtain_absmax_kernel(
     absmax_ptr,        # the absmax values in uint8
@@ -127,7 +127,7 @@ def fused_dequantize(A, quant_state):
     values_ptr = A
     values_code_ptr = quant_state.code
     # output_ptr = torch.empty(absmax_ptr.shape, dtype=torch.float32, device='cuda')
-    output_ptr = torch.empty(quant_state.shape, dtype=torch.float16, device='cuda')
+    output_ptr = torch.empty(quant_state.shape, dtype=quant_state.dtype, device='cuda')
 
     if DEBUG_FLAG:
         assert(absmax_ptr.dtype == torch.uint8)
@@ -136,7 +136,7 @@ def fused_dequantize(A, quant_state):
         assert(absmax_code_ptr.device.type == 'cuda')
         assert(absmax_offset_ptr.dtype == torch.float32)
         assert(absmax_offset_ptr.device.type == 'cuda')
-        assert(output_ptr.dtype == torch.float16)
+        assert(output_ptr.dtype == quant_state.dtype)
         assert(output_ptr.device.type == 'cuda')
 
     # NOTE: surely we want one triton block to handle at least an entire absmax block
@@ -211,26 +211,31 @@ print('========== ANSWER 1 ==========')
 answer = fast_dequantize(weight, weight.quant_state)
 print(answer.dtype)
 print(answer)
+print(answer.shape)
 print('========== ANSWER 2 ==========')
 answer = fast_dequantize(weight, weight.quant_state)
+print(answer.dtype)
 print(answer)
 print(answer.shape)
-# print('========== END ==========')
 
+print('========== MY ANSWER ==========')
 answer = fused_dequantize(weight.data, weight.quant_state)
-# print(answer)
+print(answer.dtype)
+print(answer)
+print(answer.shape)
+print('========== END ==========')
 
-exit(0)
+# exit(0)
 
 # 0.1542057991027832
 start = time.time()
-for i in range(1000):
+for i in range(10000):
     fast_dequantize(weight, weight.quant_state)
 print(time.time() - start)
 
 # 0.08240318298339844
 start = time.time()
-for i in range(1000):
+for i in range(10000):
     fused_dequantize(weight.data, weight.quant_state)
 print(time.time() - start)
 
