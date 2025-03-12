@@ -40,15 +40,15 @@ def obtain_absmax_kernel(
     # tl.store(output_ptr + absmax_idx, absmax_val_quantized)
 
     # select the code values to complete the first step of dequant
-    absmax_val = tl.load(absmax_code_ptr + absmax_val_quantized).to(tl.float32)
+    absmax_val = tl.load(absmax_code_ptr + absmax_val_quantized)
 
     # matches index_select
     # tensor([0.0930, 0.1352, 0.0097, ..., -0.1633, 0.0733, 0.1773], device='cuda:0')
     # tl.store(output_ptr + absmax_idx, absmax_val)
 
-    absmax_scale = tl.load(absmax_scale_ptr + pid).to(tl.float32)
-    absmax_offset = tl.load(absmax_offset_ptr).to(tl.float32) # TODO maybe use constant
-    absmax_final = (absmax_val * absmax_scale).to(tl.float32) + absmax_offset
+    absmax_scale = tl.load(absmax_scale_ptr + pid)
+    absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
+    absmax_final = absmax_val * absmax_scale + absmax_offset
 
     # assuming this is correct
     # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
@@ -64,9 +64,9 @@ def obtain_absmax_kernel(
 
     expanded_absmax_idx = pid * absmax_block_size + subgroup_offsets
     expanded_absmax_idx_quantized = tl.load(absmax_ptr + expanded_absmax_idx).to(tl.int32)
-    expanded_absmax_val = tl.load(absmax_code_ptr + expanded_absmax_idx_quantized).to(tl.float32)
-    expanded_absmax_scale = tl.load(absmax_scale_ptr + pid).to(tl.float32)
-    expanded_absmax_offset = tl.load(absmax_offset_ptr).to(tl.float32) # TODO maybe use constant
+    expanded_absmax_val = tl.load(absmax_code_ptr + expanded_absmax_idx_quantized)
+    expanded_absmax_scale = tl.load(absmax_scale_ptr + pid)
+    expanded_absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
     expanded_absmax_final = expanded_absmax_val * expanded_absmax_scale + expanded_absmax_offset
 
     tl.store(expanded_absmax_output_ptr + tl.arange(0, packed_block_size), expanded_absmax_final)
@@ -155,11 +155,9 @@ def fused_dequantize(A, quant_state):
 
     if DEBUG_FLAG:
         assert(absmax_ptr.dtype == torch.uint8)
-        assert(absmax_ptr.device.type == 'cuda')
         assert(absmax_code_ptr.dtype == torch.float32)
+        assert(absmax_ptr.device.type == 'cuda')
         assert(absmax_code_ptr.device.type == 'cuda')
-        assert(absmax_scale_ptr.dtype == torch.float32)
-        assert(absmax_scale_ptr.device.type == 'cuda')
         assert(absmax_offset_ptr.dtype == torch.float32)
         assert(absmax_offset_ptr.device.type == 'cuda')
         assert(output_ptr.dtype == quant_state.dtype)
@@ -256,18 +254,17 @@ if __name__ == '__main__':
             # print(actual_absmax[i])
             # print(actual_absmax_expanded[i, :])
             if actual_absmax[i] != expected_absmax[i]:
-                # actual_absmax[i] tensor(3.127191781997680664062500000000, device='cuda:0')
-                # expected_absmax[i] tensor(3.127192020416259765625000000000, device='cuda:0')
+                # tensor(3.127191781997680664, device='cuda:0')
+                # tensor(3.127192020416259766, device='cuda:0')
                 # hand:  3.127191895422129
-                # handf32: 3.127192020416259765625000000000
-                torch.set_printoptions(precision=30)
+                torch.set_printoptions(precision=18)
                 print(f'Iteration {i} failed')
                 print('actual_absmax[i]', actual_absmax[i])
                 print('expected_absmax[i]', expected_absmax[i])
-                print('weight.quant_state.absmax[i]', weight.quant_state.absmax[i], weight.quant_state.absmax[i].dtype)
-                print('weight.quant_state.state2.absmax', weight.quant_state.state2.absmax, weight.quant_state.state2.absmax.dtype)
-                print('weight.quant_state.state2.code[206]', weight.quant_state.state2.code[206], weight.quant_state.state2.code[206].dtype)
-                print('weight.quant_state.offset', weight.quant_state.offset, weight.quant_state.offset.dtype)
+                print('weight.quant_state.absmax[i]', weight.quant_state.absmax[i])
+                print('weight.quant_state.state2.absmax', weight.quant_state.state2.absmax)
+                print('weight.quant_state.state2.code[206]', weight.quant_state.state2.code[206])
+                print('weight.quant_state.offset', weight.quant_state.offset)
             assert(actual_absmax[i] == expected_absmax[i])
             assert torch.all(actual_absmax_expanded[i, :] == actual_absmax[i])
 
