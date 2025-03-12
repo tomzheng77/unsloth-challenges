@@ -13,7 +13,7 @@ from peft.utils.integrations import dequantize_module_weight as peft_dequantize
 
 DEBUG_FLAG = False
 @triton.jit
-def obtain_absmax_kernel(
+def fused_dequantize_kernel(
     absmax_ptr,        # the absmax values in uint8
     absmax_code_ptr,   # the code values in float32, each absmax value will point to this initially
     absmax_scale_ptr,  # [0...absmax_block_size) should be scaled by absmax_scale_ptr[0], etc etc
@@ -65,7 +65,23 @@ def obtain_absmax_kernel(
     expanded_absmax_val = tl.load(absmax_code_ptr + expanded_absmax_idx_quantized)
     expanded_absmax_scale = tl.load(absmax_scale_ptr + pid)
     expanded_absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
-    expanded_absmax_final = expanded_absmax_val * expanded_absmax_scale + expanded_absmax_offset
+
+    expanded_absmax_intermediate = (expanded_absmax_val * expanded_absmax_scale)
+
+    # TODO remove this flush, it is needed for some unknown reason
+    # TODO likely because it influences the PTX
+    tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_intermediate)
+
+    # use explicit ASM to avoid fusing the add with the mul, which results in a fma, which clobbers precision
+    # expanded_absmax_final = expanded_absmax_intermediate + expanded_absmax_offset
+    expanded_absmax_final = tl.inline_asm_elementwise(
+        asm="add.f32 $0, $1, $2;",
+        constraints="=f,f,f",
+        args=[expanded_absmax_intermediate, expanded_absmax_offset],
+        dtype=tl.float32,
+        is_pure=True,
+        pack=1,
+    )
 
     # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
 
@@ -143,7 +159,7 @@ def fused_dequantize(A, quant_state):
     TRITON_BLOCK_SIZE = absmax_block_size * values_block_size
     packed_block_size = TRITON_BLOCK_SIZE >> 1
     grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),)
-    obtain_absmax_kernel[grid](
+    fused_dequantize_kernel[grid](
         absmax_ptr,
         absmax_code_ptr,
         absmax_scale_ptr,
