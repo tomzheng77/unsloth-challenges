@@ -21,8 +21,6 @@ def obtain_absmax_kernel(
     values_ptr,
     values_code_ptr,
     output_ptr,
-    absmax_output_ptr,
-    expanded_absmax_output_ptr,
     n_elements,
     absmax_block_size: tl.constexpr,
     half_values_block_size: tl.constexpr,
@@ -33,27 +31,27 @@ def obtain_absmax_kernel(
     pid = tl.program_id(axis=0)
 
     # ========== [START REFERENCE ABSMAX IMPLEMENTATION] ==========
-    absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
-    absmax_val_quantized = tl.load(absmax_ptr + absmax_idx).to(tl.int32)
-
-    # write this to output_ptr, this checks out
+    # absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
+    # absmax_val_quantized = tl.load(absmax_ptr + absmax_idx).to(tl.int32)
+    #
+    # # write this to output_ptr, this checks out
     # tl.store(output_ptr + absmax_idx, absmax_val_quantized)
-
-    # select the code values to complete the first step of dequant
-    absmax_val = tl.load(absmax_code_ptr + absmax_val_quantized)
-
-    # matches index_select
-    # tensor([0.0930, 0.1352, 0.0097, ..., -0.1633, 0.0733, 0.1773], device='cuda:0')
-    # tl.store(output_ptr + absmax_idx, absmax_val)
-
-    absmax_scale = tl.load(absmax_scale_ptr + pid)
-    absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
-    absmax_final = absmax_val * absmax_scale + absmax_offset
-
-    # assuming this is correct
-    # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
-    # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
-    tl.store(absmax_output_ptr + absmax_idx, absmax_final)
+    #
+    # # select the code values to complete the first step of dequant
+    # absmax_val = tl.load(absmax_code_ptr + absmax_val_quantized)
+    #
+    # # matches index_select
+    # # tensor([0.0930, 0.1352, 0.0097, ..., -0.1633, 0.0733, 0.1773], device='cuda:0')
+    # # tl.store(output_ptr + absmax_idx, absmax_val)
+    #
+    # absmax_scale = tl.load(absmax_scale_ptr + pid)
+    # absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
+    # absmax_final = absmax_val * absmax_scale + absmax_offset
+    #
+    # # assuming this is correct
+    # # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
+    # # tensor([0.0220, 0.0221, 0.0212, ..., 0.0221, 0.0210, 0.0220], device='cuda:0')
+    # # tl.store(output_ptr + absmax_idx, absmax_final)
     # ========== [END REFERENCE ABSMAX IMPLEMENTATION] ==========
 
     # assume half_values_block_size is 128, this means that
@@ -68,8 +66,6 @@ def obtain_absmax_kernel(
     expanded_absmax_scale = tl.load(absmax_scale_ptr + pid)
     expanded_absmax_offset = tl.load(absmax_offset_ptr) # TODO maybe use constant
     expanded_absmax_final = expanded_absmax_val * expanded_absmax_scale + expanded_absmax_offset
-
-    tl.store(expanded_absmax_output_ptr + tl.arange(0, packed_block_size), expanded_absmax_final)
 
     # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
 
@@ -129,29 +125,9 @@ def fused_dequantize(A, quant_state):
     absmax_scale_ptr = quant_state.state2.absmax
     absmax_offset_ptr = quant_state.offset
     values_ptr = A
-    # values_code_ptr = quant_state.code
+    values_code_ptr = quant_state.code
     # output_ptr = torch.empty(absmax_ptr.shape, dtype=torch.float32, device='cuda')
     output_ptr = torch.empty(quant_state.shape, dtype=quant_state.dtype, device='cuda')
-    absmax_output_ptr = torch.empty(absmax_ptr.shape, dtype=torch.float32, device='cuda')
-
-    values_code_ptr = torch.tensor([
-        -1.0,
-        -0.6961928009986877,
-        -0.5250730514526367,
-        -0.39491748809814453,
-        -0.28444138169288635,
-        -0.18477343022823334,
-        -0.09105003625154495,
-        0.0,
-        0.07958029955625534,
-        0.16093020141124725,
-        0.24611230194568634,
-        0.33791524171829224,
-        0.44070982933044434,
-        0.5626170039176941,
-        0.7229568362236023,
-        1.0,
-    ], dtype=torch.float32, device='cuda')
 
     if DEBUG_FLAG:
         assert(absmax_ptr.dtype == torch.uint8)
@@ -166,7 +142,6 @@ def fused_dequantize(A, quant_state):
     # NOTE: surely we want one triton block to handle at least an entire absmax block
     TRITON_BLOCK_SIZE = absmax_block_size * values_block_size
     packed_block_size = TRITON_BLOCK_SIZE >> 1
-    expanded_absmax_output_ptr = torch.empty(packed_block_size, dtype=torch.float32, device='cuda')
     grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),)
     obtain_absmax_kernel[grid](
         absmax_ptr,
@@ -176,8 +151,6 @@ def fused_dequantize(A, quant_state):
         values_ptr,
         values_code_ptr,
         output_ptr,
-        absmax_output_ptr,
-        expanded_absmax_output_ptr,
         n_elements,
         absmax_block_size,
         half_values_block_size,
@@ -199,7 +172,7 @@ def fused_dequantize(A, quant_state):
         print('========== OUTPUT ==========')
         print(output_ptr)
 
-    return (output_ptr, absmax_output_ptr, expanded_absmax_output_ptr)
+    return output_ptr
 
 def bnb_Linear4bit(hd, m, dtype = torch.float16):
     return Linear4bit(
@@ -235,106 +208,37 @@ assert(weight.quant_state.absmax.dtype == torch.uint8)
 # print(peft_dequantize(layer))
 
 if __name__ == '__main__':
-    print('Commencing 100000 iterations of randomized testing')
-    for i in range(10000):
-        # if i != 159: continue;
+    print('========== ANSWER 1 ==========')
+    answer = fast_dequantize(weight, weight.quant_state)
+    print(answer.dtype)
+    print(answer)
+    print(answer.shape)
+    print('========== ANSWER 2 ==========')
+    answer = fast_dequantize(weight, weight.quant_state)
+    print(answer.dtype)
+    print(answer)
+    print(answer.shape)
 
-        torch.manual_seed(i)
-        tensor = torch.randn((256, 64), dtype=torch.float16, device='cuda')
-        weight = Params4bit(tensor, quant_type='nf4').to("cuda")
-        actual, actual_absmax, actual_absmax_expanded = fused_dequantize(weight.data, weight.quant_state)
-        expected, expected_absmax = fast_dequantize(weight, weight.quant_state)
-
-        actual_absmax_expanded = actual_absmax_expanded.view(256, 32)
-        torch.set_printoptions(threshold=torch.inf)
-        # print(actual_absmax)
-        # print(actual_absmax_expanded)
-
-        for i in range(256):
-            # print(actual_absmax[i])
-            # print(actual_absmax_expanded[i, :])
-            if actual_absmax[i] != expected_absmax[i]:
-                # tensor(3.127191781997680664, device='cuda:0')
-                # tensor(3.127192020416259766, device='cuda:0')
-                # hand:  3.127191895422129
-                torch.set_printoptions(precision=18)
-                print(f'Iteration {i} failed')
-                print('actual_absmax[i]', actual_absmax[i])
-                print('expected_absmax[i]', expected_absmax[i])
-                print('weight.quant_state.absmax[i]', weight.quant_state.absmax[i])
-                print('weight.quant_state.state2.absmax', weight.quant_state.state2.absmax)
-                print('weight.quant_state.state2.code[206]', weight.quant_state.state2.code[206])
-                print('weight.quant_state.offset', weight.quant_state.offset)
-            assert(actual_absmax[i] == expected_absmax[i])
-            assert torch.all(actual_absmax_expanded[i, :] == actual_absmax[i])
-
-        # exit(0)
-        # torch.set_printoptions(threshold=torch.inf)
-        # print(weight.quant_state.code)
-        # print(weight.quant_state.dtype)
-        # exit(0)
-
-        # torch.testing.assert_close(actual, expected, check_stride=True)
-        # Iteration 9999 passed for absmax
-        assert(torch.allclose(actual_absmax, expected_absmax, atol=1e-18))
-        torch.set_printoptions(precision=18)
-
-        # if an absmax has value 2.9456, then it would fail it seems
-        compare = torch.tensor(2.9456, device='cuda')
-        if not torch.allclose(actual, expected, atol=1e-9):
-            torch.set_printoptions(threshold=torch.inf)
-            print(f'Iteration {i} failed')
-            for row in range(actual.shape[0]):
-                has_fails = False
-                for col in range(actual.shape[1]):
-                    if actual[row, col] != expected[row, col]:
-                        print(f'Row {row}, Col {col}')
-                        print('actual absmax: ', actual_absmax[row], actual_absmax[row].allclose(compare, atol=1e-9))
-                        print('expected absmax: ', expected_absmax[row])
-                        print(tensor[row, col])
-                        print(actual[row, col])
-                        print(expected[row, col])
-                        has_fails = True
-
-                if actual_absmax[row].allclose(compare, atol=1e-9) and not has_fails:
-                    raise Exception('Found the culprit')
-            # print(tensor)
-            # print(actual)
-            # print(expected)
-        # assert(torch.allclose(actual, expected, atol=1e-9))
-        # print(f'Iteration {i} passed')
-
-    # print('========== ANSWER 1 ==========')
-    # answer = fast_dequantize(weight, weight.quant_state)
-    # print(answer.dtype)
-    # print(answer)
-    # print(answer.shape)
-    # print('========== ANSWER 2 ==========')
-    # answer = fast_dequantize(weight, weight.quant_state)
-    # print(answer.dtype)
-    # print(answer)
-    # print(answer.shape)
-    #
-    # print('========== MY ANSWER ==========')
-    # answer = fused_dequantize(weight.data, weight.quant_state)
-    # print(answer.dtype)
-    # print(answer)
-    # print(answer.shape)
-    # print('========== END ==========')
+    print('========== MY ANSWER ==========')
+    answer = fused_dequantize(weight.data, weight.quant_state)
+    print(answer.dtype)
+    print(answer)
+    print(answer.shape)
+    print('========== END ==========')
 
     # exit(0)
 
     # Local: 2.3127870559692383
-    # start = time.time()
-    # for i in range(10000):
-    #     fast_dequantize(weight, weight.quant_state)
-    # print(time.time() - start)
-    #
-    # # Local: 1.411628007888794
-    # start = time.time()
-    # for i in range(10000):
-    #     fused_dequantize(weight.data, weight.quant_state)
-    # print(time.time() - start)
+    start = time.time()
+    for i in range(10000):
+        fast_dequantize(weight, weight.quant_state)
+    print(time.time() - start)
+
+    # Local: 1.411628007888794
+    start = time.time()
+    for i in range(10000):
+        fused_dequantize(weight.data, weight.quant_state)
+    print(time.time() - start)
 
     # NOTE: my original implementation is flaky, you need to transpose the data
     # even so it can't be directly used in A
