@@ -11,7 +11,17 @@ def simple_fma_kernel(a_ptr, b_ptr, c_ptr, out_ptr, out2_ptr):
 
     # Compute: result = a * b + c
     result = a * b
-    result2 = tl.add(result, c)
+
+    # result2 = tl.add(result, c)
+    # Inline PTX to force add.f32
+    result2 = tl.inline_asm_elementwise(
+        asm="add.f32 $0, $1, $2;",
+        constraints="=f,f,f",
+        args=[result, c],
+        dtype=tl.float32,
+        is_pure=True,
+        pack=1,
+    )
 
     # Store the result
     tl.store(out_ptr, result)
@@ -42,3 +52,6 @@ print(a * b)
 print(out2)
 print(a * b + c)
 print(ze_torch(a, b, c))
+
+print(dir(simple_fma_kernel.cache))
+print(list(simple_fma_kernel.cache[0].values())[0].asm['ptx'])
