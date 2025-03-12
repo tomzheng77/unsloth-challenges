@@ -70,7 +70,11 @@ def fused_dequantize_kernel(
 
     # TODO remove this flush, it is needed for some unknown reason
     # TODO likely because it influences the PTX
-    tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_intermediate)
+    tl.store(
+        output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size),
+        expanded_absmax_intermediate,
+        mask=(tl.arange(0, packed_block_size) < 0),
+    )
 
     # use explicit ASM to avoid fusing the add with the mul, which results in a fma, which clobbers precision
     # expanded_absmax_final = expanded_absmax_intermediate + expanded_absmax_offset
