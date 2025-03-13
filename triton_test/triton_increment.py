@@ -24,6 +24,7 @@ def fused_dequantize_kernel(
 ):
     # Program ID: each thread block processes one output block
     pid = tl.program_id(axis=0)
+    indices = tl.arange(0, packed_block_size)
 
     # ========== [START REFERENCE ABSMAX IMPLEMENTATION] ==========
     # absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
@@ -51,9 +52,9 @@ def fused_dequantize_kernel(
 
     # assume half_values_block_size is 128, this means that
     # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
-    subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
+    subgroup_offsets = indices // half_values_block_size
 
-    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), subgroup_offsets)
+    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + indices, subgroup_offsets)
 
     expanded_absmax_idx = pid * absmax_block_size + subgroup_offsets
     expanded_absmax_idx_quantized = tl.load(absmax_ptr + expanded_absmax_idx).to(tl.int32)
@@ -66,9 +67,9 @@ def fused_dequantize_kernel(
     # TODO remove this flush, it is needed for some unknown reason
     # TODO likely because it influences the PTX
     tl.store(
-        output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size),
+        output_ptr + pid * TRITON_BLOCK_SIZE + indices,
         expanded_absmax_intermediate, # no need for bfloat16 hack
-        mask=(tl.arange(0, packed_block_size) < 0),
+        mask=(indices < 0),
     )
 
     # use explicit ASM to avoid fusing the add with the mul, which results in a fma, which clobbers precision
@@ -82,10 +83,10 @@ def fused_dequantize_kernel(
         pack=1,
     )
 
-    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
+    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + indices, expanded_absmax_final)
 
     # now lets just write something, anything to the values
-    values_idx = pid * packed_block_size + tl.arange(0, packed_block_size)
+    values_idx = pid * packed_block_size + indices
     values_val_packed = tl.load(values_ptr + values_idx).to(tl.int32)
 
     val0 = (values_val_packed >> 4).to(tl.int32)  # High 4 bits
@@ -95,7 +96,7 @@ def fused_dequantize_kernel(
     values_val1 = tl.load(values_code_ptr + val1)
 
     output_base = output_ptr + pid * TRITON_BLOCK_SIZE
-    out_offsets0 = output_base + 2 * tl.arange(0, packed_block_size)
+    out_offsets0 = output_base + 2 * indices
     out_offsets1 = out_offsets0 + 1
 
     # at least this populates everything
@@ -107,8 +108,8 @@ def fused_dequantize_kernel(
     #         [-0.5251, 0.3379, -1.0000, ..., 0.4407, -0.6962, 0.0796],
     #         [0.3379, 0.7230, -0.0911, ..., -0.5251, 0.7230, 0.7230]],
     #        device='cuda:0')
-    # tl.store(out_offsets0, pid * packed_block_size + tl.arange(0, packed_block_size))
-    # tl.store(out_offsets1, pid * packed_block_size + tl.arange(0, packed_block_size))
+    # tl.store(out_offsets0, pid * packed_block_size + indices)
+    # tl.store(out_offsets1, pid * packed_block_size + indices)
     # tl.store(out_offsets0, values_val0)
     # tl.store(out_offsets1, values_val1)
     # tl.store(out_offsets0, (values_val0 * expanded_absmax_final))
@@ -118,7 +119,7 @@ def fused_dequantize_kernel(
 
     # assume half_values_block_size is 128, this means that
     # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
-    # subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
+    # subgroup_offsets = indices // half_values_block_size
     #
     # # access absmax_final with subgroup_offsets
     # absmax_final_subgroup = tl.load(absmax_final + subgroup_offsets)
@@ -144,6 +145,7 @@ def fused_dequantize_kernel_bfloat16(
 ):
     # Program ID: each thread block processes one output block
     pid = tl.program_id(axis=0)
+    indices = tl.arange(0, packed_block_size)
 
     # ========== [START REFERENCE ABSMAX IMPLEMENTATION] ==========
     # absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
@@ -171,9 +173,9 @@ def fused_dequantize_kernel_bfloat16(
 
     # assume half_values_block_size is 128, this means that
     # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
-    subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
+    subgroup_offsets = indices // half_values_block_size
 
-    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), subgroup_offsets)
+    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + indices, subgroup_offsets)
 
     expanded_absmax_idx = pid * absmax_block_size + subgroup_offsets
     expanded_absmax_idx_quantized = tl.load(absmax_ptr + expanded_absmax_idx).to(tl.int32)
@@ -186,9 +188,9 @@ def fused_dequantize_kernel_bfloat16(
     # TODO remove this flush, it is needed for some unknown reason
     # TODO likely because it influences the PTX
     tl.store(
-        output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size),
+        output_ptr + pid * TRITON_BLOCK_SIZE + indices,
         (expanded_absmax_intermediate.to(tl.uint32, bitcast=True) & 0xFFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True),
-        mask=(tl.arange(0, packed_block_size) < 0),
+        mask=(indices < 0),
     )
 
     # use explicit ASM to avoid fusing the add with the mul, which results in a fma, which clobbers precision
@@ -202,10 +204,10 @@ def fused_dequantize_kernel_bfloat16(
         pack=1,
     )
 
-    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
+    # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + indices, expanded_absmax_final)
 
     # now lets just write something, anything to the values
-    values_idx = pid * packed_block_size + tl.arange(0, packed_block_size)
+    values_idx = pid * packed_block_size + indices
     values_val_packed = tl.load(values_ptr + values_idx).to(tl.int32)
 
     val0 = (values_val_packed >> 4).to(tl.int32)  # High 4 bits
@@ -215,7 +217,7 @@ def fused_dequantize_kernel_bfloat16(
     values_val1 = tl.load(values_code_ptr + val1)
 
     output_base = output_ptr + pid * TRITON_BLOCK_SIZE
-    out_offsets0 = output_base + 2 * tl.arange(0, packed_block_size)
+    out_offsets0 = output_base + 2 * indices
     out_offsets1 = out_offsets0 + 1
 
     # at least this populates everything
@@ -227,8 +229,8 @@ def fused_dequantize_kernel_bfloat16(
     #         [-0.5251, 0.3379, -1.0000, ..., 0.4407, -0.6962, 0.0796],
     #         [0.3379, 0.7230, -0.0911, ..., -0.5251, 0.7230, 0.7230]],
     #        device='cuda:0')
-    # tl.store(out_offsets0, pid * packed_block_size + tl.arange(0, packed_block_size))
-    # tl.store(out_offsets1, pid * packed_block_size + tl.arange(0, packed_block_size))
+    # tl.store(out_offsets0, pid * packed_block_size + indices)
+    # tl.store(out_offsets1, pid * packed_block_size + indices)
     # tl.store(out_offsets0, values_val0)
     # tl.store(out_offsets1, values_val1)
     # tl.store(out_offsets0, (values_val0 * expanded_absmax_final))
@@ -238,7 +240,7 @@ def fused_dequantize_kernel_bfloat16(
 
     # assume half_values_block_size is 128, this means that
     # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
-    # subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
+    # subgroup_offsets = indices // half_values_block_size
     #
     # # access absmax_final with subgroup_offsets
     # absmax_final_subgroup = tl.load(absmax_final + subgroup_offsets)
@@ -420,3 +422,37 @@ if __name__ == '__main__':
 # T4 (tuned)
 # 3.6271543502807617
 # 3.0006306171417236
+
+# mine = []
+# ther = []
+# for i in range(10):
+#   mine.append(test_dequantize(your_dequantize_nf4))
+#   print('mine', mine[-1])
+#   ther.append(test_dequantize(unsloth_dequantize))
+#   print('ther', ther[-1])
+#
+# print(mine)
+# print(ther)
+# mine 5.5274646282196045
+# ther 6.260597467422485
+# mine 5.169666051864624
+# ther 6.287326335906982
+# mine 5.219547271728516
+# ther 6.609143018722534
+# mine 5.147343158721924
+# ther 5.884801864624023
+# mine 5.126599073410034
+# ther 5.98569655418396
+# mine 5.154413223266602
+# ther 5.922040939331055
+# mine 5.130380630493164
+# ther 5.860331773757935
+# mine 5.138386964797974
+# ther 5.8943634033203125
+# mine 5.141045331954956
+# ther 5.932976484298706
+# mine 5.181105136871338
+# ther 5.925686597824097
+# [5.5274646282196045, 5.169666051864624, 5.219547271728516, 5.147343158721924, 5.126599073410034, 5.154413223266602, 5.130380630493164, 5.138386964797974, 5.141045331954956, 5.181105136871338]
+# [6.260597467422485, 6.287326335906982, 6.609143018722534, 5.884801864624023, 5.98569655418396, 5.922040939331055, 5.860331773757935, 5.8943634033203125, 5.932976484298706, 5.925686597824097]
+# speedup = 1.1661086920266763
