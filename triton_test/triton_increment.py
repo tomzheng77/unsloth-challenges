@@ -6,6 +6,7 @@ import torch
 import triton
 import triton.language as tl
 from mpmath import absmax
+from triton.language import bfloat16
 from unsloth.kernels import fast_dequantize
 
 from functions import my_dequantize_4bit
@@ -76,7 +77,7 @@ def fused_dequantize_kernel(
     # TODO likely because it influences the PTX
     tl.store(
         output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
-        expanded_absmax_intermediate,
+        (expanded_absmax_intermediate.to(tl.uint32) & 0xFFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True),
         mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
     )
 
@@ -200,7 +201,7 @@ def fused_dequantize_kernel_bfloat16(
     # TODO likely because it influences the PTX
     tl.store(
         output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
-        expanded_absmax_intermediate,
+        (expanded_absmax_intermediate.to(tl.uint32) & 0xFFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True),
         mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
     )
 
@@ -403,6 +404,7 @@ if __name__ == '__main__':
     print(answer)
     print(answer.shape)
     print('========== END ==========')
+    # print(list(fused_dequantize_kernel_bfloat16.cache[0].values())[0].asm['ptx'])
 
     # exit(0)
 
