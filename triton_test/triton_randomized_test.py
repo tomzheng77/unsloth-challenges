@@ -16,3 +16,6 @@ for i in range(10000):
 
     if not torch.allclose(actual, expected, atol=1e-9):
         print(f'Iteration {i} failed')
+        print(expected)
+        print(actual)
+        exit(0)

@@ -23,12 +23,16 @@ def fused_dequantize_kernel(
     output_ptr,
     n_elements,
     absmax_block_size: tl.constexpr,
+    absmax_block_size_step: tl.constexpr,
     half_values_block_size: tl.constexpr,
     TRITON_BLOCK_SIZE: tl.constexpr,
+    TRITON_BLOCK_SIZE_step: tl.constexpr,
     packed_block_size: tl.constexpr,
+    packed_block_size_step: tl.constexpr, # 1/8 of packed_block_size
 ):
     # Program ID: each thread block processes one output block
     pid = tl.program_id(axis=0)
+    sid = tl.program_id(axis=1)
 
     # ========== [START REFERENCE ABSMAX IMPLEMENTATION] ==========
     # absmax_idx = pid * absmax_block_size + tl.arange(0, absmax_block_size)
@@ -56,11 +60,11 @@ def fused_dequantize_kernel(
 
     # assume half_values_block_size is 128, this means that
     # subgroup_offsets = [0, 0, 0, ... (128 times) 1, 1, 1, ... 2, 2, 2, ... 3, 3, 3, ...]
-    subgroup_offsets = tl.arange(0, packed_block_size) // half_values_block_size
+    subgroup_offsets = tl.arange(0, packed_block_size_step) // half_values_block_size
 
     # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), subgroup_offsets)
 
-    expanded_absmax_idx = pid * absmax_block_size + subgroup_offsets
+    expanded_absmax_idx = pid * absmax_block_size + sid * absmax_block_size_step + subgroup_offsets
     expanded_absmax_idx_quantized = tl.load(absmax_ptr + expanded_absmax_idx).to(tl.int32)
     expanded_absmax_val = tl.load(absmax_code_ptr + expanded_absmax_idx_quantized)
     expanded_absmax_scale = tl.load(absmax_scale_ptr + pid)
@@ -71,9 +75,9 @@ def fused_dequantize_kernel(
     # TODO remove this flush, it is needed for some unknown reason
     # TODO likely because it influences the PTX
     tl.store(
-        output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size),
+        output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
         expanded_absmax_intermediate,
-        mask=(tl.arange(0, packed_block_size) < 0),
+        mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
     )
 
     # use explicit ASM to avoid fusing the add with the mul, which results in a fma, which clobbers precision
@@ -90,7 +94,7 @@ def fused_dequantize_kernel(
     # tl.store(output_ptr + pid * TRITON_BLOCK_SIZE + tl.arange(0, packed_block_size), expanded_absmax_final)
 
     # now lets just write something, anything to the values
-    values_idx = pid * packed_block_size + tl.arange(0, packed_block_size)
+    values_idx = pid * packed_block_size + sid * packed_block_size_step + tl.arange(0, packed_block_size_step)
     values_val_packed = tl.load(values_ptr + values_idx).to(tl.int32)
 
     val0 = (values_val_packed >> 4).to(tl.int32)  # High 4 bits
@@ -99,8 +103,8 @@ def fused_dequantize_kernel(
     values_val0 = tl.load(values_code_ptr + val0)
     values_val1 = tl.load(values_code_ptr + val1)
 
-    output_base = output_ptr + pid * TRITON_BLOCK_SIZE
-    out_offsets0 = output_base + 2 * tl.arange(0, packed_block_size)
+    output_base = output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step
+    out_offsets0 = output_base + 2 * tl.arange(0, packed_block_size_step)
     out_offsets1 = out_offsets0 + 1
 
     # at least this populates everything
@@ -161,8 +165,12 @@ def fused_dequantize(A, quant_state):
 
     # NOTE: surely we want one triton block to handle at least an entire absmax block
     TRITON_BLOCK_SIZE = absmax_block_size * values_block_size
+    TRITON_BLOCK_SIZE_step = TRITON_BLOCK_SIZE >> 3
     packed_block_size = TRITON_BLOCK_SIZE >> 1
-    grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),)
+    packed_block_size_step = packed_block_size >> 3
+    absmax_block_size_step = absmax_block_size >> 3
+    grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),8)
+
     fused_dequantize_kernel[grid](
         absmax_ptr,
         absmax_code_ptr,
@@ -173,11 +181,13 @@ def fused_dequantize(A, quant_state):
         output_ptr,
         n_elements,
         absmax_block_size,
+        absmax_block_size_step,
         half_values_block_size,
         TRITON_BLOCK_SIZE,
+        TRITON_BLOCK_SIZE_step,
         packed_block_size,
+        packed_block_size_step,
     )
-
     if DEBUG_FLAG:
         absmax_selected = torch.index_select(absmax_code_ptr, 0, absmax_ptr.to(torch.int32)).to(torch.float32)
         num_absmax_blocks = absmax_scale_ptr.numel()
