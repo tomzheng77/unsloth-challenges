@@ -1,5 +1,8 @@
 import time
 
+import os
+os.environ['TRITON_PTXAS_CC'] = '75'
+
 from PIL.ImageChops import offset
 from bitsandbytes.nn import Linear4bit, Params4bit
 import torch
@@ -74,11 +77,11 @@ def fused_dequantize_kernel(
 
     # TODO remove this flush, it is needed for some unknown reason
     # TODO likely because it influences the PTX
-    tl.store(
-        output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
-        expanded_absmax_intermediate,
-        mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
-    )
+    # tl.store(
+    #     output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
+    #     expanded_absmax_intermediate,
+    #     mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
+    # )
 
     # use explicit ASM to avoid fusing the add with the mul, which results in a fma, which clobbers precision
     # expanded_absmax_final = expanded_absmax_intermediate + expanded_absmax_offset
@@ -120,8 +123,8 @@ def fused_dequantize_kernel(
     # tl.store(out_offsets1, pid * packed_block_size + tl.arange(0, packed_block_size))
     # tl.store(out_offsets0, values_val0)
     # tl.store(out_offsets1, values_val1)
-    tl.store(out_offsets0, (values_val0 * expanded_absmax_final))
-    tl.store(out_offsets1, (values_val1 * expanded_absmax_final))
+    tl.store(out_offsets0, values_val0)
+    tl.store(out_offsets1, values_val0)
     # tl.store(out_offsets0, values_val0 * expanded_absmax_final + expanded_absmax_offset)
     # tl.store(out_offsets1, values_val1 * expanded_absmax_final + expanded_absmax_offset)
 
@@ -162,6 +165,8 @@ def fused_dequantize(A, quant_state):
         assert(absmax_offset_ptr.device.type == 'cuda')
         assert(output_ptr.dtype == quant_state.dtype)
         assert(output_ptr.device.type == 'cuda')
+        assert(values_code_ptr.dtype == torch.float32)
+        assert(values_code_ptr.device.type == 'cuda')
 
     # NOTE: surely we want one triton block to handle at least an entire absmax block
     TRITON_BLOCK_SIZE = absmax_block_size * values_block_size
@@ -212,7 +217,7 @@ def bnb_Linear4bit(hd, m, dtype = torch.float16):
         quant_type          = "nf4",
     )
 
-tensor = torch.randn((2048, 8192), dtype=torch.float16, device='cuda')
+tensor = torch.randn((2048, 8192), dtype=torch.bfloat16, device='cuda')
 weight = Params4bit(tensor, quant_type='nf4').to("cuda")
 assert(weight.quant_state.offset.dtype == torch.float32)
 assert(weight.quant_state.state2.absmax.dtype == torch.float32)
@@ -255,6 +260,8 @@ if __name__ == '__main__':
     print(answer)
     print(answer.shape)
     print('========== END ==========')
+
+    print(list(fused_dequantize_kernel.cache[0].values())[0].asm['ptx'])
 
     # exit(0)
 
