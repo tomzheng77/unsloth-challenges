@@ -1,13 +1,11 @@
 import time
 
 from PIL.ImageChops import offset
-from bitsandbytes.functional import QuantState
 from bitsandbytes.nn import Linear4bit, Params4bit
 import torch
 import triton
 import triton.language as tl
 from mpmath import absmax
-from torch._library.custom_ops import custom_op
 from unsloth.kernels import fast_dequantize
 
 from functions import my_dequantize_4bit
@@ -130,38 +128,8 @@ def fused_dequantize_kernel(
     # # access absmax_final with subgroup_offsets
     # absmax_final_subgroup = tl.load(absmax_final + subgroup_offsets)
 
-import torch
-torch_compile_options = torch_compile_options = {
-    # "epilogue_fusion"   : True,
-    # "max_autotune"      : True,
-    # "shape_padding"     : True,
-    "trace.enabled"     : True,
-    # "triton.cudagraphs" : False,
-}
 
-# Must show all graph breaks are not seen with torch.compile
-import os
-os.environ["TORCHDYNAMO_VERBOSE"] = "1"
-os.environ["TORCHINDUCTOR_FORCE_DISABLE_CACHES"] = "1"
-os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = "1"
-
-import logging
-torch._inductor.config.debug = True
-torch._logging.set_logs(
-    dynamo = logging.WARN,
-    inductor = logging.WARN,
-    graph_breaks = True,
-    recompiles = True,
-    recompiles_verbose = True,
-    compiled_autograd_verbose = True,
-    # aot_joint_graph = True, # Enable for more logs
-    # aot_graphs = True,
-)
-torch._dynamo.config.verbose = True
-torch._dynamo.config.suppress_errors = False
-
-@custom_op("mylib::fused_dequantize", mutates_args=())
-def fused_dequantize(A: torch.Tensor, quant_state: QuantState) -> torch.Tensor:
+def fused_dequantize(A, quant_state):
     n_elements = torch.numel(A) * 2
     absmax_block_size = quant_state.state2.blocksize # e.g. 256 (every 256 abs-maxes have a scaling factor)
     values_block_size = quant_state.blocksize # e.g. 64 (every 64 elements have an absmax)
@@ -225,14 +193,6 @@ def fused_dequantize(A: torch.Tensor, quant_state: QuantState) -> torch.Tensor:
         print(output_ptr)
 
     return output_ptr
-
-# Register a CUDA implementation (optional, but ensures compatibility)
-fused_dequantize.register_impl("cuda", fused_dequantize)
-
-# Compiled function using the custom op
-@torch.compile(fullgraph=True)
-def torch_fn(A, quant_state):
-    return torch.ops.mylib.fused_dequantize(A, quant_state)
 
 def bnb_Linear4bit(hd, m, dtype = torch.float16):
     return Linear4bit(
