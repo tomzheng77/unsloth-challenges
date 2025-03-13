@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 from unsloth.kernels import fast_dequantize
+from torch.library import custom_op
 
 DEBUG_FLAG = False
 @triton.jit
@@ -266,7 +267,68 @@ def fused_dequantize_kernel_bfloat16(
     val1_bf16_bits = (val1_bits_adjusted >> 16) & 0xffff # TODO handle Inf and NaN
     tl.store(out_offsets1, val1_bf16_bits.to(tl.uint16).to(tl.bfloat16, bitcast=True))
 
+@custom_op("mylib::fused_dequantize_op", mutates_args=())
+def fused_dequantize_op(
+    absmax_ptr: torch.Tensor,
+    absmax_code_ptr: torch.Tensor,
+    absmax_scale_ptr: torch.Tensor,
+    absmax_offset_ptr: torch.Tensor,
+    values_ptr: torch.Tensor,
+    values_code_ptr: torch.Tensor,
+    n_elements: int,
+    absmax_block_size: int,
+    half_values_block_size: int,
+    TRITON_BLOCK_SIZE: int,
+    packed_block_size: int,
+    shape_x: int,
+    shape_y: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    output_ptr = torch.empty((shape_x, shape_y), dtype=dtype, device='cuda')
+    grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),)
 
+    # TODO: only use the special output if < sm_80
+    is_bfloat16 = dtype == torch.bfloat16
+    kernel = fused_dequantize_kernel_bfloat16 if is_bfloat16 else fused_dequantize_kernel
+    kernel[grid](
+        absmax_ptr,
+        absmax_code_ptr,
+        absmax_scale_ptr,
+        absmax_offset_ptr,
+        values_ptr,
+        values_code_ptr,
+        output_ptr,
+        n_elements,
+        absmax_block_size,
+        half_values_block_size,
+        TRITON_BLOCK_SIZE,
+        packed_block_size,
+    )
+
+    return output_ptr
+
+
+# Register a fake implementation
+@fused_dequantize_op.register_fake
+def fake_fused_dequantize_op(
+    absmax_ptr: torch.Tensor,
+    absmax_code_ptr: torch.Tensor,
+    absmax_scale_ptr: torch.Tensor,
+    absmax_offset_ptr: torch.Tensor,
+    values_ptr: torch.Tensor,
+    values_code_ptr: torch.Tensor,
+    n_elements: int,
+    absmax_block_size: int,
+    half_values_block_size: int,
+    TRITON_BLOCK_SIZE: int,
+    packed_block_size: int,
+    shape_x: int,
+    shape_y: int,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    return torch.empty((shape_x, shape_y), dtype=dtype, device='cuda')
+
+@torch.compile(fullgraph=True)
 def fused_dequantize(A, quant_state):
     n_elements = torch.numel(A) * 2
     absmax_block_size = quant_state.state2.blocksize # e.g. 256 (every 256 abs-maxes have a scaling factor)
@@ -284,8 +346,6 @@ def fused_dequantize(A, quant_state):
     absmax_offset_ptr = quant_state.offset
     values_ptr = A
     values_code_ptr = quant_state.code
-    # output_ptr = torch.empty(absmax_ptr.shape, dtype=torch.float32, device='cuda')
-    output_ptr = torch.empty(quant_state.shape, dtype=quant_state.dtype, device='cuda')
 
     if DEBUG_FLAG:
         assert(absmax_ptr.dtype == torch.uint8)
@@ -294,30 +354,26 @@ def fused_dequantize(A, quant_state):
         assert(absmax_code_ptr.device.type == 'cuda')
         assert(absmax_offset_ptr.dtype == torch.float32)
         assert(absmax_offset_ptr.device.type == 'cuda')
-        assert(output_ptr.dtype == quant_state.dtype)
-        assert(output_ptr.device.type == 'cuda')
 
     # NOTE: surely we want one triton block to handle at least an entire absmax block
     TRITON_BLOCK_SIZE = absmax_block_size * values_block_size
     packed_block_size = TRITON_BLOCK_SIZE >> 1
-    grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),)
 
-    # TODO: only use the special output if < sm_80
-    is_bfloat16 = quant_state.dtype == torch.bfloat16
-    kernel = fused_dequantize_kernel_bfloat16 if is_bfloat16 else fused_dequantize_kernel
-    kernel[grid](
+    output_ptr = fused_dequantize_op(
         absmax_ptr,
         absmax_code_ptr,
         absmax_scale_ptr,
         absmax_offset_ptr,
         values_ptr,
         values_code_ptr,
-        output_ptr,
         n_elements,
         absmax_block_size,
         half_values_block_size,
         TRITON_BLOCK_SIZE,
         packed_block_size,
+        quant_state.shape[0],
+        quant_state.shape[1],
+        quant_state.dtype,
     )
 
     if DEBUG_FLAG:
@@ -456,3 +512,23 @@ if __name__ == '__main__':
 # [5.5274646282196045, 5.169666051864624, 5.219547271728516, 5.147343158721924, 5.126599073410034, 5.154413223266602, 5.130380630493164, 5.138386964797974, 5.141045331954956, 5.181105136871338]
 # [6.260597467422485, 6.287326335906982, 6.609143018722534, 5.884801864624023, 5.98569655418396, 5.922040939331055, 5.860331773757935, 5.8943634033203125, 5.932976484298706, 5.925686597824097]
 # speedup = 1.1661086920266763
+
+# self score: 3 + 1 + 2 + 2 + 1 + 3 + 1 = 13
+# not sure what cache eviction means
+# if attemped_A:
+#     A_score = 0
+#     if single_triton_kernel: A_score += 3
+#     speedup = old_time / new_time
+#     if speedup <= 1.00: A_score -= 3
+#     if speedup >= 1.05: A_score += 1
+#     if speedup >= 1.10: A_score += 2
+#     if speedup >= 1.15: A_score += 2
+#     if kernel_works_in_torch_compile: A_score += 1
+#     else: A_score -= 1
+#     if custom_asm_works: A_score += 3
+#     if uses_cache_eviction: A_score += 1
+#     if tested_in_f16_and_bf16: A_score += 1
+#     else: A_score -= 1
+#     final_score += A_score
+# else:
+#     final_score += 0
