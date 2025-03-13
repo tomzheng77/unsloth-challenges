@@ -1,16 +1,10 @@
 import time
 
-from PIL.ImageChops import offset
 from bitsandbytes.nn import Linear4bit, Params4bit
 import torch
 import triton
 import triton.language as tl
-from mpmath import absmax
-from triton.language import bfloat16
 from unsloth.kernels import fast_dequantize
-
-from functions import my_dequantize_4bit
-from peft.utils.integrations import dequantize_module_weight as peft_dequantize
 
 DEBUG_FLAG = False
 @triton.jit
