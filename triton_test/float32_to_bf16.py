@@ -2,6 +2,7 @@ import struct
 
 import triton
 import triton.language as tl
+from triton.language.semantic import bitcast
 
 
 @triton.jit
@@ -24,8 +25,28 @@ def float32_to_bf16_kernel(
     # Since Triton lacks reinterpret, we use a cast to uint32 that preserves bits
     bits = tl.cast(x, tl.uint32, bitcast=True)  # Updated to use tl.bitcast
 
+    # Extract exponent to check for NaN/Inf
+    exponent = (bits & 0x7f800000)
+    is_special = (exponent == 0x7f800000)
+
+    # Rounding logic
+    mantissa_bit = (bits & (1 << 16)) != 0
+    round_bit = (bits & (1 << 15)) != 0
+    sticky_bits = (bits & ((1 << 15) - 1)) != 0
+    should_round_up = (round_bit & sticky_bits) | (round_bit & mantissa_bit)
+
+    # Increment if rounding up
+    bits_adjusted = tl.where(should_round_up, bits + (1 << 16), bits)
+
+    # Handle NaN/Inf cases
+    # bits_final = tl.where(
+    #     is_special & (bits & ~0xff800000),  # NaN case
+    #     0x7fffffff,  # Return a NaN
+    #     bits_adjusted
+    # )
+
     # Shift right and truncate to 16 bits
-    bf16_bits = (bits >> 16) & 0xffff
+    bf16_bits = (bits_adjusted >> 16) & 0xffff # use bits_final if possible
 
     # Store as uint16 (bf16 format)
     tl.store(output_ptr + offsets, bf16_bits.to(tl.uint16).to(tl.bfloat16, bitcast=True), mask=mask)
@@ -68,4 +89,11 @@ f = 1.234
 bits = float32_to_bits(f)
 print(f"{f} -> {bits:#010x}")
 
-print(list(float32_to_bf16_kernel.cache[0].values())[0].asm['ptx'])
+# print(list(float32_to_bf16_kernel.cache[0].values())[0].asm['ptx'])
+
+# randomized testing
+for i in range(1000):
+    tensor = torch.randn((1024,), dtype=torch.float32, device="cuda")
+    actual = float32_to_bf16_triton(tensor)
+    expected = tensor.to(torch.bfloat16)
+    assert(torch.allclose(actual, expected, atol=1e-9))
