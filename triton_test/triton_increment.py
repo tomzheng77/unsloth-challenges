@@ -165,11 +165,11 @@ def fused_dequantize(A, quant_state):
 
     # NOTE: surely we want one triton block to handle at least an entire absmax block
     TRITON_BLOCK_SIZE = absmax_block_size * values_block_size
-    TRITON_BLOCK_SIZE_step = TRITON_BLOCK_SIZE >> 3
     packed_block_size = TRITON_BLOCK_SIZE >> 1
-    packed_block_size_step = packed_block_size >> 3
-    absmax_block_size_step = absmax_block_size >> 3
-    grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),8)
+    TRITON_BLOCK_SIZE_step = TRITON_BLOCK_SIZE >> 2
+    packed_block_size_step = packed_block_size >> 2
+    absmax_block_size_step = absmax_block_size >> 2
+    grid = lambda meta: (triton.cdiv(n_elements, meta['TRITON_BLOCK_SIZE']),4)
 
     fused_dequantize_kernel[grid](
         absmax_ptr,
@@ -285,3 +285,7 @@ if __name__ == '__main__':
 # T4
 # 3.0163562297821045
 # 2.995758056640625
+
+# T4 (tuned)
+# 3.6271543502807617
+# 3.0006306171417236
