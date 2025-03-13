@@ -71,7 +71,7 @@ def fused_dequantize_kernel(
     # TODO likely because it influences the PTX
     tl.store(
         output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
-        (expanded_absmax_intermediate.to(tl.uint32) & 0xFFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True),
+        expanded_absmax_intermediate, # no need for bfloat16 hack
         mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
     )
 
@@ -195,7 +195,7 @@ def fused_dequantize_kernel_bfloat16(
     # TODO likely because it influences the PTX
     tl.store(
         output_ptr + pid * TRITON_BLOCK_SIZE + sid * TRITON_BLOCK_SIZE_step + tl.arange(0, packed_block_size_step),
-        (expanded_absmax_intermediate.to(tl.uint32) & 0xFFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True),
+        (expanded_absmax_intermediate.to(tl.uint32, bitcast=True) & 0xFFFF).to(tl.uint16).to(tl.bfloat16, bitcast=True),
         mask=(tl.arange(0, packed_block_size_step) < 1), # NOTE: after sid, also needs to write a single value
     )
 
