@@ -40,7 +40,7 @@ class MemoryEfficientLinear(torch.autograd.Function):
                 other_param = list(torch.chunk(other_param, chunks=N_CHUNKS, dim=0))
             other_params_chunks.append(other_param)
 
-        Z_output = torch.tensor(0, dtype=torch.float64, device=X.device)
+        Z_output = None
         with torch.enable_grad():
             X_chunks = torch.chunk(X, chunks=N_CHUNKS, dim=0)
             tensors_for_backward: list[torch.Tensor] = list(X_chunks)
@@ -55,9 +55,15 @@ class MemoryEfficientLinear(torch.autograd.Function):
                         other_param = other_param[i]
                     other_params_chunk.append(other_param)
 
-                Z_chunk = forward_function(X_chunk, *other_params_chunk)
-                Z_output += Z_chunk * size_chunk
-                tensors_for_backward.append(Z_chunk)
+                Z_chunk_or_tuple = forward_function(X_chunk, *other_params_chunk)
+                if isinstance(Z_chunk_or_tuple, tuple):
+                    Z_chunk_or_tuple = Z_chunk_or_tuple[0]
+
+                tensors_for_backward.append(Z_chunk_or_tuple)
+                if Z_output is None:
+                    Z_output = Z_chunk_or_tuple * size_chunk
+                else:
+                    Z_output += Z_chunk_or_tuple * size_chunk
 
             ctx.save_for_backward(*tensors_for_backward)
             return (Z_output / n_batch).to(torch.float32)
@@ -112,7 +118,6 @@ if __name__ == '__main__':# run tests to see if the outputs match
         assert(torch.allclose(gradW_expected, gradW_actual))
         assert(torch.allclose(gradB_expected, gradB_actual))
 
-    exit(0)
     # use memory efficient linear for unsloth GRPO
     import os
 
@@ -122,7 +127,7 @@ if __name__ == '__main__':# run tests to see if the outputs match
 
     old_hidden_states = torch.randn(6, 241, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=True)
     new_hidden_states = old_hidden_states  # don't deviate too much to blow out K-L divergence
-    lm_head = torch.randn(128256, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=True)
+    lm_head = nn.Parameter(torch.randn(128256, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=True))
     labels = torch.randint(0, 128256, (6, 240), dtype=torch.int64, device="cuda")
     completion_input_ids = torch.randint(0, 128256, (6, 240), dtype=torch.int64, device="cuda")
 
@@ -149,6 +154,16 @@ if __name__ == '__main__':# run tests to see if the outputs match
 
     print(result)
 
-    # my_fn = curried_grpo_function(old_hidden_states, completion_input_ids, completion_mask, advantages, beta)
-    # my_fn(new_hidden_states, lm_head, labels)
-    # loss = MemoryEfficientLinear.apply(new_hidden_states, lm_head, labels, my_fn)
+    reiter = MemoryEfficientLinear.apply(
+        new_hidden_states,
+        old_hidden_states,
+        lm_head,
+        completion_input_ids,
+        completion_mask,
+        advantages,
+        beta,
+        scaler,
+        UnslothEfficientGRPO.apply,
+    )
+
+    print(reiter)
