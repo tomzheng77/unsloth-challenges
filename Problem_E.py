@@ -26,13 +26,9 @@ class MemoryEfficientLinear(torch.autograd.Function):
         n_batch = X.shape[0]
         # X0, X1 = torch.chunk(X, chunks=2, dim=0)
         labels_0, labels_1 = torch.chunk(labels, chunks=2, dim=0)
-        print('labels_0', labels_0.shape)
-        print('labels_1', labels_1.shape)
         with torch.enable_grad():
             X0 = X[:n_batch // 2]
             X1 = X[n_batch // 2:]
-            print('X0', X0.shape)
-            print('X1', X1.shape)
             assert X0.requires_grad
             assert X1.requires_grad
             Z0 = forward_function(X0, linear, labels_0)
