@@ -3,6 +3,9 @@ from torch import nn
 
 # use memory efficient linear for unsloth GRPO
 import os
+
+from call_unsloth_grpo import old_hidden_states
+
 os.environ['UNSLOTH_IS_PRESENT'] = '1'
 from unsloth_zoo.rl_replacements import UnslothEfficientGRPO
 
@@ -86,16 +89,17 @@ class MemoryEfficientLinear(torch.autograd.Function):
             X = Xs[i]
             Z = Zs[i]
             batch_size = X.shape[0]
-            grad_scale = grad_output * (batch_size / total_batch_size)
-            grad_X = torch.autograd.grad(Z, X, grad_outputs=grad_scale, retain_graph=True)[0]
-            grad_Xs.append(grad_X)
+            # grad_scale = grad_output * (batch_size / total_batch_size)
+            # TODO understand why passing grad_outputs=grad_scale doesn't work
+            grad_X = torch.autograd.grad(Z, X, retain_graph=True)[0]
+            grad_Xs.append(grad_X * (batch_size / total_batch_size))
 
         # Assemble full gradient w.r.t. X
         grad_X = torch.cat(grad_Xs, dim=0)
         return tuple([grad_X if i == 0 else None for i in range(ctx.num_args)])
 
 if __name__ == '__main__':# run tests to see if the outputs match
-    for x in range(0):
+    for x in range(10):
         input_original = torch.randn(4, 8, 2, device="cuda", requires_grad=True)
         linear = nn.Linear(2, 4).to("cuda")
         labels = torch.randint(0, 4, (4, 8), device="cuda")
@@ -123,24 +127,27 @@ if __name__ == '__main__':# run tests to see if the outputs match
         assert(torch.allclose(gradB_expected, gradB_actual))
 
     for i in range(10):
-        old_hidden_states = torch.randn(6, 241, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=True)
-        new_hidden_states = old_hidden_states  # don't deviate too much to blow out K-L divergence
-        lm_head = nn.Parameter(torch.randn(128256, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=True))
+        old_hidden_states_original = torch.randn(6, 241, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=False)
+        new_hidden_states_original = old_hidden_states_original.clone().detach().requires_grad_(True)  # don't deviate too much to blow out K-L divergence
+        lm_head_original = torch.randn(128256, 2048, dtype=torch.bfloat16, device="cuda", requires_grad=True)
         labels = torch.randint(0, 128256, (6, 240), dtype=torch.int64, device="cuda")
         completion_input_ids = torch.randint(0, 128256, (6, 240), dtype=torch.int64, device="cuda")
 
         # filter out 128004
         # completion_mask = torch.randint(0, 2, (6, 240), dtype=torch.int64, device="cuda")
         completion_mask = torch.ones_like(completion_input_ids)
-        advantages = torch.randn(6, dtype=torch.float32, device="cuda")
+        advantages_original = torch.randn(6, dtype=torch.float32, device="cuda")
         # advantages = torch.zeros(6, dtype=torch.float32, device="cuda")
         beta = 0.04
         scaler = None
         n_chunks = 1
 
-        new_hidden_states_clone = new_hidden_states.clone().detach().requires_grad_(True)
+        old_hidden_states = old_hidden_states_original.clone().detach()
+        new_hidden_states = new_hidden_states_original.clone().detach().requires_grad_(True)
+        lm_head = nn.Parameter(lm_head_original.clone().detach().requires_grad_(True))
+        advantages = advantages_original.clone().detach().requires_grad_(False)
         result = UnslothEfficientGRPO.apply(
-            new_hidden_states_clone,
+            new_hidden_states,
             old_hidden_states,
             lm_head,
             completion_input_ids,
@@ -152,13 +159,16 @@ if __name__ == '__main__':# run tests to see if the outputs match
         )[0]
 
         result.backward()
-        expected_grad = new_hidden_states_clone.grad
-        print(result)
-        print(new_hidden_states_clone.grad)
+        expected_grad = new_hidden_states.grad
+        # print(result)
+        # print(new_hidden_states.grad)
 
-        new_hidden_states_clone = new_hidden_states.clone().detach().requires_grad_(True)
+        old_hidden_states = old_hidden_states_original.clone().detach()
+        new_hidden_states = new_hidden_states_original.clone().detach().requires_grad_(True)
+        lm_head = nn.Parameter(lm_head_original.clone().detach().requires_grad_(True))
+        advantages = advantages_original.clone().detach().requires_grad_(False)
         reiter = MemoryEfficientLinear.apply(
-            new_hidden_states_clone,
+            new_hidden_states,
             old_hidden_states,
             lm_head,
             completion_input_ids,
@@ -170,8 +180,8 @@ if __name__ == '__main__':# run tests to see if the outputs match
         )
 
         reiter.backward()
-        actual_grad = new_hidden_states_clone.grad
-        print(reiter)
-        print(actual_grad)
+        actual_grad = new_hidden_states.grad
+        # print(reiter)
+        # print(actual_grad)
         assert(torch.allclose(reiter, result))
         assert(torch.allclose(actual_grad, expected_grad))
