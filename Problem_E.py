@@ -29,6 +29,7 @@ class MemoryEfficientLinear(torch.autograd.Function):
         # TODO early exit if there is only one sample or if the number
         # TODO of samples isn't a multiple of two
         n_batch = X.shape[0]
+        N_CHUNKS = 2
 
         # chunk all other tensors instead of Parameters and Modules
         other_params_chunks = []
@@ -36,12 +37,12 @@ class MemoryEfficientLinear(torch.autograd.Function):
             other_param = other_params[i]
             assert not isinstance(other_param, list) # to prevent confusing downstream logic
             if isinstance(other_param, torch.Tensor) and not isinstance(other_param, nn.Parameter):
-                other_param = list(torch.chunk(other_param, chunks=2, dim=0))
+                other_param = list(torch.chunk(other_param, chunks=N_CHUNKS, dim=0))
             other_params_chunks.append(other_param)
 
         Z_output = torch.tensor(0, dtype=torch.float64, device=X.device)
         with torch.enable_grad():
-            X_chunks = torch.chunk(X, chunks=2, dim=0)
+            X_chunks = torch.chunk(X, chunks=N_CHUNKS, dim=0)
             tensors_for_backward: list[torch.Tensor] = list(X_chunks)
             for i in range(len(X_chunks)):
                 X_chunk = X_chunks[i]
@@ -85,20 +86,24 @@ class MemoryEfficientLinear(torch.autograd.Function):
 
 if __name__ == '__main__':# run tests to see if the outputs match
     for x in range(100):
-        input = torch.randn(4, 8, 2, device="cuda", requires_grad=True)
+        input_original = torch.randn(4, 8, 2, device="cuda", requires_grad=True)
         linear = nn.Linear(2, 4).to("cuda")
         labels = torch.randint(0, 4, (4, 8), device="cuda")
+
+        input = input_original.clone().detach().requires_grad_(True)
         expected = transformation_function(input, linear, labels)
+
+        expected.backward()
+        gradI_expected = torch.clone(input.grad)
+        gradW_expected = torch.clone(linear.weight.grad)
+        gradB_expected = torch.clone(linear.bias.grad)
+
+        input = input_original.clone().detach().requires_grad_(True)
         actual = MemoryEfficientLinear.apply(input, linear, labels, transformation_function)
         assert(torch.allclose(expected, actual))
 
         # now check if the backpropagation calculates the same
-        expected.backward()
-        gradI_expected = input.grad
-        gradW_expected = linear.weight.grad
-        gradB_expected = linear.bias.grad
-
-        MemoryEfficientLinear.apply(input, linear, labels, transformation_function).backward()
+        actual.backward()
         gradI_actual = input.grad
         gradW_actual = linear.weight.grad
         gradB_actual = linear.bias.grad
@@ -107,6 +112,7 @@ if __name__ == '__main__':# run tests to see if the outputs match
         assert(torch.allclose(gradW_expected, gradW_actual))
         assert(torch.allclose(gradB_expected, gradB_actual))
 
+    exit(0)
     # use memory efficient linear for unsloth GRPO
     import os
 
