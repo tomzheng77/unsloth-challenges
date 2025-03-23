@@ -4,7 +4,6 @@ from bitsandbytes.nn import Linear4bit, Params4bit
 import torch
 import triton
 import triton.language as tl
-from unsloth.kernels import fast_dequantize
 from torch.library import custom_op
 
 DEBUG_FLAG = False
@@ -426,6 +425,7 @@ assert(weight.quant_state.absmax.dtype == torch.uint8)
 # print(peft_dequantize(layer))
 
 if __name__ == '__main__':
+    from unsloth.kernels import fast_dequantize
     print('========== ANSWER 1 ==========')
     answer = fast_dequantize(weight, weight.quant_state)
     print(answer.dtype)
