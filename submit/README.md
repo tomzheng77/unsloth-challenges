@@ -7,16 +7,15 @@ testing on a Tesla T4 it achieved a 1.166x speedup.
 # Problem B
 
 I used the `accelerate` library to spin up two subprocesses in the notebook.
-I converted the Params4bit to use float32 to the storage_dtype using a custom triton kernel
-This allowed the LlamaAttention and LlamaMlp to be wrapped in one module
+I converted the Params4bit to float32 (as the storage_dtype) using a custom triton kernel
+This allowed the LlamaAttention and LlamaMLP to be wrapped in one FSDP module each (as all their inner params are float32)
+Therefore modules such as LlamaMLP can be torch.compile(d)
 
 # Problem C
 
-I made sure torch compile works using the following ideas
-
-- Monkey patching ??? is required to avoid the CUDA calls
-- Monkey patch forward is to avoid calling Params4bit.t
+I monkey patched the dequantize function to use what was developed for part A.
+Then I monkey patched the 4bit forward function to avoid referencing Params4bit.data, which confuses it
 
 # Problem E
 
-Following the idea in described in the original notebook
+I followed the ideas discussed in the puzzles notebook, reducing VRAM by 50%
