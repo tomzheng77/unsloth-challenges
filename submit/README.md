@@ -9,7 +9,9 @@ testing on a Tesla T4 it achieved a 1.166x speedup.
 I used the `accelerate` library to spin up two subprocesses in the notebook.
 I converted the Params4bit to float32 (as the storage_dtype) using a custom triton kernel
 This allowed the LlamaAttention and LlamaMLP to be wrapped in one FSDP module each (as all their inner params are float32)
-Therefore modules such as LlamaMLP can be torch.compile(d)
+Therefore modules such as LlamaMLP can be torch compiled
+
+https://www.kaggle.com/code/tomzheng77/problem-b-fsdp2/edit
 
 # Problem C
 
