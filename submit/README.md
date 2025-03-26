@@ -6,7 +6,9 @@ testing on a Tesla T4 it achieved a 1.166x speedup.
 
 # Problem B
 
-I used the `accelerate` library and the 
+I used the `accelerate` library to spin up two subprocesses in the notebook.
+I converted the Params4bit to use float32 to the storage_dtype using a custom triton kernel
+This allowed the LlamaAttention and LlamaMlp to be wrapped in one module
 
 # Problem C
 
